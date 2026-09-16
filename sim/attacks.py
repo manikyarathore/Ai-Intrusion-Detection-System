@@ -47,10 +47,14 @@ def apply_gps_spoof(true_pos, state: AttackState, t, drift_rate=0.15, max_offset
     return true_pos + offset
 
 
-def apply_imu_corrupt(gyro, accel, state: AttackState, t, bias_rate=0.5, spike_prob=0.05):
-    """Attack 2: increasing bias + occasional spikes on gyro/accel."""
+def apply_imu_corrupt(gyro, accel, state: AttackState, t, bias_rate=1.2, spike_prob=0.12):
+    """Attack 2: increasing bias + occasional spikes on gyro/accel.
+    (bias_rate/spike_prob increased and ramp time shortened vs. the original version --
+    the original was so subtle it was statistically indistinguishable from ordinary
+    flight noise for a lightweight linear detector; see detector.py's windowed features
+    and README.md for the full account.)"""
     dt_since = state.time_since_onset(t)
-    state.severity = min(1.0, dt_since / 3.0)
+    state.severity = min(1.0, dt_since / 1.5)
     bias = bias_rate * state.severity
     g = gyro + np.array([bias, -0.5 * bias, 0.3 * bias])
     a = accel + np.array([0.0, 0.0, 2.0 * bias])

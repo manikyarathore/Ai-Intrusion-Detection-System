@@ -17,8 +17,8 @@ from .detector import PRHNLiteDetector
 from .attacks import ATTACK_NAMES
 
 
-def run(attack_id=1, onset_frac=0.35, x1y1=(-3.0, -3.0), x2y2=(3.0, 3.0),
-        max_episode_seconds=14.0, detector_path=None, seed=7, decimate=2):
+def run(attack_id=1, onset_frac=0.35, x1y1=(-6.0, -16.0), x2y2=(-6.0, 16.0),
+        max_episode_seconds=30.0, detector_path=None, seed=7, decimate=2):
     env = TwoDroneIDSEnv(x1y1=x1y1, x2y2=x2y2, max_episode_seconds=max_episode_seconds, seed=seed)
     detector = PRHNLiteDetector(seed=seed)
     if detector_path and os.path.exists(detector_path):
@@ -57,7 +57,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--attack", type=int, default=1)
     p.add_argument("--onset", type=float, default=0.35)
-    p.add_argument("--seconds", type=float, default=14.0)
+    p.add_argument("--seconds", type=float, default=30.0)
     p.add_argument("--detector", type=str, default="runs/detector.npz")
     p.add_argument("--out", type=str, default="runs/episode.json")
     p.add_argument("--seed", type=int, default=7)

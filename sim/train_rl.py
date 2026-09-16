@@ -15,16 +15,25 @@ from .detector import PRHNLiteDetector
 from .calibrate import collect_calibration_features
 
 
-def evaluate_recall(detector, seeds=range(5000, 5010), max_episode_seconds=14.0, onset_frac=0.4):
+def evaluate_recall(detector, seeds=range(5000, 5010), max_episode_seconds=30.0, onset_frac=0.4,
+                     env_factory=None):
     """Held-out per-class recall + normal-phase false-positive rate, used to pick the
-    best checkpoint during RL fine-tuning (Section 11.5 addendum)."""
+    best checkpoint during RL fine-tuning (Section 11.5 addendum).
+
+    env_factory: callable(seed) -> a fresh env instance. Defaults to TwoDroneIDSEnv for
+    backward compatibility -- IMPORTANT: an earlier version of this function hardcoded
+    TwoDroneIDSEnv with no way to override it, so callers evaluating a *different*
+    environment (e.g. train_live_four.py's FourDroneIDSEnv) were silently being scored
+    against the wrong simulation. Always pass env_factory explicitly for any non-default env."""
     from .attacks import ATTACK_NAMES
+    if env_factory is None:
+        env_factory = lambda s: TwoDroneIDSEnv(max_episode_seconds=max_episode_seconds, seed=s)
     recalls = {}
     fp_total, fp_count = 0, 0
     for atk in range(1, 5):
         correct = total = 0
         for s in seeds:
-            env = TwoDroneIDSEnv(max_episode_seconds=max_episode_seconds, seed=s)
+            env = env_factory(s)
             obs, info = env.reset(force_attack_id=atk, onset_frac=onset_frac, seed=s)
             terminated = truncated = False
             while not (terminated or truncated):
@@ -56,7 +65,7 @@ def train(n_episodes=300, max_episode_seconds=12.0, lr=0.05, leave_one_out_id=No
     # class-balanced supervised warm-start, then RL fine-tunes from there (see
     # PRHNLiteDetector.supervised_pretrain for why this avoids REINFORCE's cold-start
     # exploration collapse on the rarer attack classes)
-    detector.supervised_pretrain(calib_feats, calib_labels, epochs=80, lr=0.3, seed=seed)
+    detector.supervised_pretrain(calib_feats, calib_labels, epochs=80, lr=0.1, seed=seed)
 
     rng = np.random.default_rng(seed)
     reward_baseline = 0.0  # running mean reward, subtracted as a variance-reduction
@@ -81,7 +90,7 @@ def train(n_episodes=300, max_episode_seconds=12.0, lr=0.05, leave_one_out_id=No
         score = min(recalls.values()) - 0.5 * fpr
         if score > best_score:
             best_score = score
-            best_state = (detector.W.copy(), detector.b.copy())
+            best_state = (detector.W1.copy(), detector.b1.copy(), detector.W2.copy(), detector.b2.copy())
         return recalls, fpr, score
 
     # score the post-supervised-pretrain checkpoint too, so RL fine-tuning can only ever
@@ -98,10 +107,10 @@ def train(n_episodes=300, max_episode_seconds=12.0, lr=0.05, leave_one_out_id=No
         epsilon = max(0.02, 0.10 * (1 - ep / n_episodes))
 
         while not (terminated or truncated):
-            action, proba, z = detector.act(obs, explore=True, epsilon=epsilon, rng=rng)
+            action, proba, cache = detector.act(obs, explore=True, epsilon=epsilon, rng=rng)
             next_obs, reward, terminated, truncated, info = env.step(action)
 
-            detector.reinforce_update(z, action, reward - reward_baseline)
+            detector.reinforce_update(cache, action, reward - reward_baseline)
             reward_baseline = 0.995 * reward_baseline + 0.005 * reward
 
             correct = int(action == info["true_label"]) or (
@@ -131,7 +140,7 @@ def train(n_episodes=300, max_episode_seconds=12.0, lr=0.05, leave_one_out_id=No
     # restore the best-scoring checkpoint seen (by held-out min-class-recall), not
     # necessarily the final weights -- see the note above evaluate_recall()
     if best_state is not None:
-        detector.W, detector.b = best_state
+        detector.W1, detector.b1, detector.W2, detector.b2 = best_state
 
     if log_path:
         detector.save(log_path)

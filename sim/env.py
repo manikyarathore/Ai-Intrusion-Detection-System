@@ -30,7 +30,7 @@ from .comm_link import CommLink, inter_drone_range
 from .detector import featurize, N_FEATURES, N_CLASSES
 
 MODEL_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "models", "two_drone_scene.xml"
+    os.path.dirname(__file__), "..", "models", "battlefield_scene.xml"
 )
 
 # reward structure, Section 11.5
@@ -47,11 +47,13 @@ LOAO_UNSEEN_BONUS = 1.5            # extra reward for flagging-as-anomalous an a
 class TwoDroneIDSEnv(gym.Env):
     metadata = {"render_modes": []}
 
-    def __init__(self, x1y1=(-3.0, -3.0), x2y2=(3.0, 3.0), altitude=1.2,
-                 max_episode_seconds=20.0, leave_one_out_id=None, seed=None,
-                 physics_fusion_gain=0.003):
+    def __init__(self, x1y1=(-6.0, -16.0), x2y2=(-6.0, 16.0), altitude=3.0,
+                 max_episode_seconds=30.0, leave_one_out_id=None, seed=None,
+                 physics_fusion_gain=0.003, attacker_standoff=12.0, attacker_side=1.0):
         super().__init__()
         self.physics_fusion_gain = physics_fusion_gain
+        self.attacker_standoff = attacker_standoff
+        self.attacker_side = attacker_side
         self.model = mujoco.MjModel.from_xml_path(MODEL_PATH)
         self.data = mujoco.MjData(self.model)
         self.dt = self.model.opt.timestep
@@ -98,7 +100,8 @@ class TwoDroneIDSEnv(gym.Env):
             attack_id = int(self.rng.choice([0] + candidates))  # 0 = no attack this episode
         onset_frac = onset_frac if onset_frac is not None else float(self.rng.uniform(0.3, 0.7))
         self.attacker.schedule(attack_id, onset_frac=onset_frac,
-                                start_xy=self.start_xy, goal_xy=self.goal_xy, altitude=self.altitude)
+                                start_xy=self.start_xy, goal_xy=self.goal_xy, altitude=self.altitude,
+                                standoff_distance=self.attacker_standoff, side=self.attacker_side)
         self._episode_attack_id = attack_id
 
         mujoco.mj_resetData(self.model, self.data)
@@ -130,9 +133,9 @@ class TwoDroneIDSEnv(gym.Env):
         self._imu_vel_est = np.zeros(3)
         self._prev_reported_pos = main_start.copy()  # still used as the controller's own vel estimate
 
-        self._window = {k: deque(maxlen=20) for k in [
+        self._window = {k: deque(maxlen=100) for k in [  # 1.0s of history (was 0.2s)
             "gps_reported", "gps_physics_pred", "gyro", "accel", "ctrl_cmd",
-            "ctrl_applied", "comm_gap_steps", "comm_dropped", "mag", "vel",
+            "ctrl_applied", "comm_gap_steps", "comm_dropped", "mag", "vel", "path_dev",
         ]}
         self._record = record
         self._log = [] if record else None
@@ -155,6 +158,8 @@ class TwoDroneIDSEnv(gym.Env):
 
         main_pos = self.data.xpos[self.model.body("main").id].copy()
         terminated = bool(np.linalg.norm(main_pos[:2] - self.goal_xy) < 0.3)
+        crashed = bool(main_pos[2] > 40.0 or np.linalg.norm(main_pos[:2]) > 90.0)
+        terminated = terminated or crashed
         truncated = self._step_i >= self.max_steps
 
         obs = featurize(self._window)
@@ -274,6 +279,22 @@ class TwoDroneIDSEnv(gym.Env):
         w["comm_dropped"].append(1.0 if dropped else 0.0)
         w["mag"].append(main_mag)
         w["vel"].append(vel_est)
+
+        # cross-track deviation of the physics branch's OWN independent position estimate
+        # (IMU dead-reckoning, self._imu_pos_est -- not the possibly-spoofed GPS reading)
+        # from the known straight-line mission path. Using gps_reported here instead
+        # would be a mistake: under GPS spoofing, the controller actively steers the
+        # *true* trajectory so that the *spoofed* reading looks on-path, so cross-track
+        # deviation of gps_reported stays near zero by construction, telling us nothing.
+        # The dead-reckoned estimate isn't fooled by the spoof, so it's the one that
+        # actually reveals the drone drifting off its real intended path.
+        path_vec = self.goal_xy - self.start_xy
+        path_len = np.linalg.norm(path_vec) + 1e-6
+        path_dir = path_vec / path_len
+        rel = self._imu_pos_est[:2] - self.start_xy
+        along = np.dot(rel, path_dir)
+        cross_track = rel - along * path_dir
+        w["path_dev"].append(float(np.linalg.norm(cross_track)))
 
         if self._record:
             self._log.append({

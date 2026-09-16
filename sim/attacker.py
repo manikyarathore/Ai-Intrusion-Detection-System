@@ -13,7 +13,10 @@ import numpy as np
 from .controller import ArduCopterStyleController
 from .attacks import AttackState
 
-EFFECTIVE_RANGE = 3.0  # meters; attacks only "reach" the main drone within this range
+EFFECTIVE_RANGE = 16.0  # meters; attacks only "reach" the main drone within this range.
+                          # Increased for the battlefield-scale map (Section 11 update) --
+                          # still a physically plausible reach for GPS spoofing/jamming
+                          # equipment (real jammers can reach well beyond this).
 
 
 class AttackerPolicy:
@@ -25,20 +28,22 @@ class AttackerPolicy:
         self.scheduled_onset_frac = 0.5
         self._intercept_target = None
 
-    def schedule(self, attack_id, onset_frac=0.5, start_xy=None, goal_xy=None, altitude=1.2):
+    def schedule(self, attack_id, onset_frac=0.5, start_xy=None, goal_xy=None, altitude=1.2,
+                 standoff_distance=12.0, side=1.0):
         """start_xy/goal_xy: the main drone's known mission endpoints, used to precompute
-        a station-keeping point along its path near where the attack should trigger."""
+        a station-keeping point along its path near where the attack should trigger.
+        standoff_distance/side: how far, and to which side (+1/-1) of the flight line,
+        the attacker positions itself -- e.g. across a border into "enemy territory"."""
         self.scheduled_attack_id = attack_id
         self.scheduled_onset_frac = onset_frac
         if start_xy is not None and goal_xy is not None:
             start_xy, goal_xy = np.asarray(start_xy, dtype=float), np.asarray(goal_xy, dtype=float)
             waypoint_xy = start_xy + onset_frac * (goal_xy - start_xy)
-            # stand just off the flight line, well within effective range of it
             path_dir = goal_xy - start_xy
             path_dir = path_dir / (np.linalg.norm(path_dir) + 1e-6)
-            perp = np.array([-path_dir[1], path_dir[0]])
-            standoff_xy = waypoint_xy + 1.2 * perp
-            self._intercept_target = np.array([standoff_xy[0], standoff_xy[1], altitude + 0.2])
+            perp = side * np.array([path_dir[1], -path_dir[0]])
+            standoff_xy = waypoint_xy + standoff_distance * perp
+            self._intercept_target = np.array([standoff_xy[0], standoff_xy[1], altitude])
         else:
             self._intercept_target = None
 

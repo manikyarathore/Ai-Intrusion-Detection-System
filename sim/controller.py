@@ -103,6 +103,12 @@ class ArduCopterStyleController:
         # ---- Velocity loop (PID) -> desired acceleration ----
         vel_err = vel_des - vel
         self._vel_i += vel_err * self.dt
+        self._vel_i = np.clip(self._vel_i, -2.0, 2.0)  # anti-windup: a persistent fault
+                                                          # (e.g. a stuck/corrupted motor)
+                                                          # never lets vel_err resolve, so
+                                                          # an unclamped integral eventually
+                                                          # winds up and diverges over a
+                                                          # long episode
         acc_des = self.kp_vel * vel_err + self.ki_vel * self._vel_i - self.kd_vel * vel
         acc_des[2] += GRAVITY  # gravity feed-forward for hover
 
@@ -122,6 +128,7 @@ class ArduCopterStyleController:
         # ---- Rate loop (PID) -> desired body torque ----
         rate_err = rate_des - gyro
         self._rate_i += rate_err * self.dt
+        self._rate_i = np.clip(self._rate_i, -5.0, 5.0)  # anti-windup, same reasoning
         rate_d = (rate_err - self._prev_rate_err) / self.dt
         self._prev_rate_err = rate_err
         torque_des = self.kp_rate * rate_err + self.ki_rate * self._rate_i + self.kd_rate * rate_d
